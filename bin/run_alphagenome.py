@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import csv
 import os
 import sys
 import pandas as pd
@@ -26,11 +25,6 @@ from alphagenome_wrapper.vcf_io import (
     open_annotated_vcf,
     set_info_value,
 )
-from alphagenome_wrapper.aggregation import (
-    CHROMATIN_OUTPUT_TYPES,
-    summarize_group_score,
-    summarize_tidy_scores,
-)
 
 from alphagenome_wrapper.scoring import (
     AlphaGenomeScoreResult,
@@ -38,24 +32,13 @@ from alphagenome_wrapper.scoring import (
     get_selected_scorers,
 )
 
-
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Optional
-
 
 # AlphaGenome specific imports
 from alphagenome.models import dna_client
 
-
-
 # Constants:
-
-STATUS_SCORED = "SCORED"
-STATUS_ERROR = "ERROR"
-STATUS_SKIPPED_UNSUPPORTED = "SKIPPED_UNSUPPORTED_VARIANT"
-STATUS_SKIPPED_LIMIT = "SKIPPED_MAX_VARIANTS"
 
 # Missing value used in VCF and TSV outputs
 MISSING_VALUE = "."
@@ -177,29 +160,6 @@ def is_symbolic_variant(ref, alt):
         or alt.startswith("<") 
         or alt.endswith(">")
     )
-
-
-
-def is_snv(ref, alt):
-    return len(ref) == 1 and len(alt) == 1
-
-
-def is_simple_indel(ref, alt):
-    """
-    simple indel is defined as a single base insertion or deletion, where one allele is empty and the other is a single base.
-    - no symbolic alleles
-    - only A/C/G/T/N symbols
-
-    """
-    allowed = set("ACGTNacgtn")
-
-    if not set(ref).issubset(allowed):
-        return False
-
-    if not set(alt).issubset(allowed):
-        return False
-
-    return len(ref) != len(alt)
 
 def is_valid_dna_allele(allele):
     allowed = set("ACGTNacgtn")
@@ -378,28 +338,6 @@ def resolve_sequence_length(sequence_length_str):
     return dna_client.SUPPORTED_SEQUENCE_LENGTHS[seq_len_key]
 
 
-def sanitize_info_value(value):
-    """
-    Make a value safe for VCF-INFO fields.
-    Removes characters that could make INFO fields illegible or malformed.
-
-    """
-
-    if value is None:
-        return "."
-
-    value = str(value)
-
-    if value == "" or value.lower() == "nan":
-        return "."
-
-    return (
-        value
-        .replace(";", "_")
-        .replace(",", "_")
-        .replace("\t", "_")
-        .replace(" ", "_")
-    )
 
 def extract_variant_record_data(variant) -> VariantRecordData:
     """
@@ -657,7 +595,7 @@ def annotate_variant_record(
         None
         if expression_score == MISSING_VALUE
         else expression_score,
-        )
+    )
 
 
 
@@ -771,24 +709,7 @@ def main():
     organism = resolve_organism(args.organism)
     sequence_length = resolve_sequence_length(args.sequence_length)
     selected_scorers = get_selected_scorers(max_scorers =args.max_scorers, scorer_names=args.scorers,)
-    #debug print to check the number of selected scorers
-    print(
-        f"Requested scorer keys: {args.scorers}",
-        file=sys.stderr,
-    )
-
-    print(
-        f"Selected scorer count: {len(selected_scorers)}",
-        file=sys.stderr,
-    )
-
-    for scorer in selected_scorers:
-        print(
-            f"Selected scorer: {scorer.name}",
-            file=sys.stderr,
-        )
-
-
+   
     print(f"Using {len(selected_scorers)} AlphaGenome scorer(s)", flush=True)
     print(f"Requested scorer groups: {args.scorers}", flush=True)
 
@@ -804,8 +725,7 @@ def main():
         selected_scorers=selected_scorers,
         max_variants=args.max_variants,
     )
-    print("Initializing AlphaGenome API Client...")
-    print(f"Using {len(selected_scorers)} AlphaGenome scorer(s)", flush=True) # temporary debug print
+    print("AlphaGenome scoring completed successfully.", flush=True)
     
 
 if __name__ == "__main__":

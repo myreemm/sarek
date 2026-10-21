@@ -186,11 +186,10 @@ def is_snv(ref, alt):
 
 def is_simple_indel(ref, alt):
     """
-    Einfache Indels:
-    - eine Allelseite ist länger als die andere
-    - keine Kommas
-    - keine symbolischen Allele
-    - nur A/C/G/T/N-Zeichen
+    simple indel is defined as a single base insertion or deletion, where one allele is empty and the other is a single base.
+    - no symbolic alleles
+    - only A/C/G/T/N symbols
+
     """
     allowed = set("ACGTNacgtn")
 
@@ -383,7 +382,7 @@ def sanitize_info_value(value):
     """
     Make a value safe for VCF-INFO fields.
     Removes characters that could make INFO fields illegible or malformed.
-    
+
     """
 
     if value is None:
@@ -805,7 +804,7 @@ def main():
         selected_scorers=selected_scorers,
         max_variants=args.max_variants,
     )
-    print("Initialisiere AlphaGenome API Client...")
+    print("Initializing AlphaGenome API Client...")
     print(f"Using {len(selected_scorers)} AlphaGenome scorer(s)", flush=True) # temporary debug print
     
 

@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
-import sys
 
-# AlpgaGenome imports
+# AlphaGenome imports
 from alphagenome.data import genome
-from alphagenome.models import variant_scorers
+from alphagenome.models import 
+
+# AlphaGenome wrapper imports
 
 from alphagenome_wrapper.aggregation import (
     CHROMATIN_OUTPUT_TYPES,
@@ -23,6 +24,16 @@ from alphagenome_wrapper.aggregation import (
     summarize_group_score,
     summarize_tidy_scores,
 )
+# Constants:
+
+DEFAULT_SCORER_NAMES = (
+    "atac",
+    "dnase",
+    "rna_seq",
+)
+
+ACTIVE_SCORER_SUFFIX = "_active"
+
 
 
 @dataclass(frozen=True)
@@ -44,6 +55,8 @@ class AlphaGenomeScoreResult:
             Gene associated with the maximum absolute score, if available.
         chromatin_score:
             Maximum absolute score across chromatin-related output types.
+        expression_score:
+            Maximum absolute score across RNA_SEQ results.
     """
 
     max_abs_score: Optional[float]
@@ -56,67 +69,110 @@ class AlphaGenomeScoreResult:
     
 
 
-# Helper function to select the requested scorers from the available scorers
-def get_selected_scorers(
-    max_scorers: int = 1,
-    scorer_names: str | None = None,
-):
-    """
-    Select AlphaGenome variant scorers.
 
-    Explicit scorer names take precedence over max_scorers. The limit is
-    applied only when no explicit scorer names are provided.
+def parse_scorer_names(
+    scorer_names: str | None,
+) -> list[str]:
+    """
+    Parse comma-separated AlphaGenome scorer names.
+
+    Duplicate names are removed while preserving their requested order.
     """
 
-    all_scorers = variant_scorers.RECOMMENDED_VARIANT_SCORERS
+    normalized_text = str(
+        scorer_names or ""
+    ).strip().lower()
 
-    normalized_scorer_names = (
-        str(scorer_names).strip().lower()
-        if scorer_names is not None
-        else ""
-    )
-
-    if normalized_scorer_names not in {
+    if normalized_text in {
         "",
         "none",
         "null",
     }:
-        requested_names = [
-            name.strip().lower()
-            for name in normalized_scorer_names.split(",")
-            if name.strip()
-        ]
+        return []
 
-        available_scorers = {
-            str(key).lower(): scorer
-            for key, scorer in all_scorers.items()
-        }
+    parsed_names = [
+        name.strip()
+        for name in normalized_text.split(",")
+        if name.strip()
+    ]
 
-        unknown_names = [
-            name
-            for name in requested_names
-            if name not in available_scorers
-        ]
+    return list(
+        dict.fromkeys(parsed_names)
+    )
 
-        if unknown_names:
-            raise ValueError(
-                "Unknown AlphaGenome scorer(s): "
-                + ", ".join(unknown_names)
-                + ". Available scorer keys are: "
-                + ", ".join(sorted(available_scorers))
-            )
 
-        return [
-            available_scorers[name]
-            for name in requested_names
-        ]
+def get_selected_scorers(
+    max_scorers: int | None = 3,
+    scorer_names: str | None = None,
+):
+    """
+    Select validated differential AlphaGenome scorer configurations.
 
-    scorers = list(all_scorers.values())
+    If no explicit scorer names are supplied, the wrapper uses ATAC,
+    DNASE, and RNA_SEQ as its documented default selection.
 
-    if max_scorers is None or max_scorers <= 0:
-        return scorers
+    Duplicate scorer names are removed. A positive max_scorers value acts
+    only as a validation limit. The selection is never silently truncated.
 
-    return scorers[:max_scorers]
+    Active-allele scorers are currently rejected because their absolute
+    activity values are not compatible with the prototype's differential
+    compact summaries.
+    """
+
+    available_scorers = {
+        str(key).lower(): scorer
+        for key, scorer
+        in variant_scorers.RECOMMENDED_VARIANT_SCORERS.items()
+    }
+
+    requested_names = (
+        parse_scorer_names(scorer_names)
+        or list(DEFAULT_SCORER_NAMES)
+    )
+
+    unknown_names = [
+        name
+        for name in requested_names
+        if name not in available_scorers
+    ]
+
+    if unknown_names:
+        raise ValueError(
+            "Unknown AlphaGenome scorer(s): "
+            + ", ".join(unknown_names)
+            + ". Available  scorer keys are: "
+            + ", ".join(sorted(available_scorers))
+        )
+
+    active_names = [
+        name
+        for name in requested_names
+        if name.endswith(ACTIVE_SCORER_SUFFIX)
+    ]
+
+    if active_names:
+        raise ValueError(
+            "Active-allele scorers are not yet supported by "
+            "the compact differential summary: "
+            + ", ".join(active_names)
+        )
+
+    if (
+        max_scorers is not None
+        and max_scorers > 0
+        and len(requested_names) > max_scorers
+    ):
+        raise ValueError(
+            "The number of selected AlphaGenome scorers "
+            f"({len(requested_names)}) exceeds the configured "
+            f"maximum ({max_scorers}). Selected scorers: "
+            + ", ".join(requested_names)
+        )
+
+    return [
+        available_scorers[name]
+        for name in requested_names
+    ]
 
 
 def compute_alphagenome_score(chrom, pos, ref, alt, dna_model, organism, sequence_length, selected_scorers,) -> AlphaGenomeScoreResult:
@@ -138,17 +194,6 @@ def compute_alphagenome_score(chrom, pos, ref, alt, dna_model, organism, sequenc
         variant_scorers=selected_scorers,
         organism=organism,
     )
-    for scorer, scorer_result in zip(
-        selected_scorers,
-        variant_scores,
-        strict=True,
-    ):
-        print(
-            "Scorer result:",
-            scorer.name,
-            "shape=",
-            scorer_result.shape,
-        )
 
     score_dataframe = variant_scorers.tidy_scores([variant_scores])
 

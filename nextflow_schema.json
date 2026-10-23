@@ -787,7 +787,7 @@
                 "alphagenome_max_scorers": {
                     "type": "integer",
                     "description": "Maximum number of AlphaGenome variant scorers to use during scoring.",
-                    "default": 1
+                    "default": 3
                 },
                 "alphagenome_scorers": {
                     "type": "string",

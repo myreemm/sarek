@@ -32,6 +32,13 @@ from alphagenome_wrapper.scoring import (
     get_selected_scorers,
 )
 
+from alphagenome_wrapper.variants import (
+    VariantClass,
+    VariantRecordData,
+    extract_variant_record_data,
+    is_scorable_variant_class,
+)
+
 from dataclasses import dataclass
 from enum import Enum
 
@@ -53,37 +60,8 @@ class VariantStatus(str, Enum):
     SKIPPED_UNSUPPORTED = "SKIPPED_UNSUPPORTED_VARIANT"
     SKIPPED_LIMIT = "SKIPPED_MAX_VARIANTS"
 
-class VariantClass(str, Enum):
-    """Variant classes recognized by the AlphaGenome wrapper."""
-
-    SNV = "SNV"
-    INSERTION = "INSERTION"
-    DELETION = "DELETION"
-    MNP = "MNP"
-    COMPLEX_DELINS = "COMPLEX_DELINS"
-    MULTIALLELIC = "MULTIALLELIC"
-    SYMBOLIC = "SYMBOLIC"
-    NO_CHANGE = "NO_CHANGE"
 
 # Dataclass:
-
-
-@dataclass(frozen=True)
-class TrimmedAlleles:
-    """Minimal allele representation used for variant classification."""
-
-    reference: str
-    alternate: str
-    prefix_length: int
-
-SCORABLE_VARIANT_CLASSES = frozenset(
-    {
-        VariantClass.SNV,
-        VariantClass.INSERTION,
-        VariantClass.DELETION,
-    }
-)
-
 
 
 @dataclass(frozen=True)
@@ -97,17 +75,6 @@ class VariantOutputValues:
     chromatin_score: float | str
     expression_score: float | str
 
-@dataclass(frozen=True)
-class VariantRecordData:
-    """Structured values extracted from one VCF record."""
-
-    original_chromosome: str
-    alphagenome_chromosome: str
-    position: int
-    reference: str
-    alternate: str
-    variant_id: str
-    variant_class: VariantClass
 
 @dataclass(frozen=True)
 class ProcessedVariantResult:
@@ -117,167 +84,6 @@ class ProcessedVariantResult:
     score_result: AlphaGenomeScoreResult | None
     status: VariantStatus
 
-
-def resolve_alphagenome_chromosome(chromosome: str) -> str:
-    """
-    Resolve a supported VCF chromosome name for AlphaGenome.
-
-    The function does not modify the chromosome name stored in the output
-    VCF record.
-    """
-
-    chromosome_name = str(chromosome).strip()
-
-    if not chromosome_name:
-        raise ValueError(
-            "The VCF record contains an empty chromosome name."
-        )
-
-    mitochondrial_aliases = {
-        "M",
-        "MT",
-        "chrM",
-        "chrMT",
-    }
-
-    if chromosome_name in mitochondrial_aliases:
-        return "chrM"
-
-    if chromosome_name.startswith("chr"):
-        return chromosome_name
-
-    return f"chr{chromosome_name}"
-
-def is_multiallelic_variant(alt):
-    return "," in str(alt)
-
-def is_symbolic_variant(ref, alt):
-    ref = str(ref)
-    alt = str(alt)
-    return( 
-        ref.startswith("<") 
-        or ref.endswith(">") 
-        or alt.startswith("<") 
-        or alt.endswith(">")
-    )
-
-def is_valid_dna_allele(allele):
-    allowed = set("ACGTNacgtn")
-    return bool(allele) and set(str(allele)).issubset(allowed)
-
-def trim_common_allele_context(
-    ref: str,
-    alt: str,
-) -> TrimmedAlleles:
-    """
-    Remove shared suffix and prefix bases from a biallelic variant.
-
-    The function returns a minimal allele representation for classification
-    only. It does not perform reference-aware left alignment and does not
-    modify the original VCF record.
-
-    Args:
-        ref:
-            Original reference allele.
-        alt:
-            Original alternate allele.
-
-    Returns:
-        TrimmedAlleles containing the minimal reference and alternate
-        sequences and the number of removed leading bases.
-    """
-
-    trimmed_ref = ref.upper()
-    trimmed_alt = alt.upper()
-
-    if trimmed_ref == trimmed_alt:
-        return TrimmedAlleles(
-            reference="",
-            alternate="",
-            prefix_length=0,
-        )
-
-    # Remove the shared suffix first.
-    while (
-        trimmed_ref
-        and trimmed_alt
-        and trimmed_ref[-1] == trimmed_alt[-1]
-    ):
-        trimmed_ref = trimmed_ref[:-1]
-        trimmed_alt = trimmed_alt[:-1]
-
-    prefix_length = 0
-
-    # Remove the shared prefix.
-    while (
-        trimmed_ref
-        and trimmed_alt
-        and trimmed_ref[0] == trimmed_alt[0]
-    ):
-        trimmed_ref = trimmed_ref[1:]
-        trimmed_alt = trimmed_alt[1:]
-        prefix_length += 1
-
-    return TrimmedAlleles(
-        reference=trimmed_ref,
-        alternate=trimmed_alt,
-        prefix_length=prefix_length,
-    )
-
-def classify_variant_for_alphagenome(ref: str, alt: str,) -> VariantClass:
-    """
-    Classify a biallelic VCF variant using a trimmed allele representation.
-
-    Classification is independent of whether the current prototype scores
-    the resulting variant class.
-    """
-
-    normalized_ref = str(ref).strip().upper()
-    normalized_alt = str(alt).strip().upper()
-
-    if is_multiallelic_variant(normalized_alt):
-        return VariantClass.MULTIALLELIC
-
-    if is_symbolic_variant(normalized_ref, normalized_alt):
-        return VariantClass.SYMBOLIC
-
-    if (
-        not is_valid_dna_allele(normalized_ref)
-        or not is_valid_dna_allele(normalized_alt)
-    ):
-        return VariantClass.SYMBOLIC
-
-    if normalized_ref == normalized_alt:
-        return VariantClass.NO_CHANGE
-
-    trimmed = trim_common_allele_context(
-        normalized_ref,
-        normalized_alt,
-    )
-
-    trimmed_ref = trimmed.reference
-    trimmed_alt = trimmed.alternate
-
-    if not trimmed_ref and not trimmed_alt:
-        return VariantClass.NO_CHANGE
-
-    if not trimmed_ref:
-        return VariantClass.INSERTION
-
-    if not trimmed_alt:
-        return VariantClass.DELETION
-
-    if len(trimmed_ref) == 1 and len(trimmed_alt) == 1:
-        return VariantClass.SNV
-
-    if len(trimmed_ref) == len(trimmed_alt):
-        return VariantClass.MNP
-
-    return VariantClass.COMPLEX_DELINS
-def is_scorable_variant_class(variant_class: VariantClass,) -> bool:
-    """Return whether a variant class is currently scored by the prototype."""
-
-    return variant_class in SCORABLE_VARIANT_CLASSES
 
  
 # Load AlphaGenome API key from file or environment variable.
@@ -337,58 +143,6 @@ def resolve_sequence_length(sequence_length_str):
 
     return dna_client.SUPPORTED_SEQUENCE_LENGTHS[seq_len_key]
 
-
-
-def extract_variant_record_data(variant) -> VariantRecordData:
-    """
-    Extract and classify the relevant values from one cyvcf2 record.
-
-    The original chromosome name is preserved for the output VCF. A separate
-    chromosome name is resolved for the AlphaGenome API request.
-    """
-
-    original_chromosome = str(variant.CHROM).strip()
-    alphagenome_chromosome = resolve_alphagenome_chromosome(
-        original_chromosome
-    )
-
-    position = int(variant.POS)
-    reference = str(variant.REF).upper()
-
-    alternate_alleles = [
-        str(allele).upper()
-        for allele in variant.ALT
-        if allele is not None
-    ]
-
-    if not alternate_alleles:
-        alternate = ""
-        variant_class = VariantClass.NO_CHANGE
-
-    elif len(alternate_alleles) > 1:
-        alternate = ",".join(alternate_alleles)
-        variant_class = VariantClass.MULTIALLELIC
-
-    else:
-        alternate = alternate_alleles[0]
-        variant_class = classify_variant_for_alphagenome(
-            reference,
-            alternate,
-        )
-
-    variant_id = (
-        f"{original_chromosome}_{position}_{reference}_{alternate}"
-    )
-
-    return VariantRecordData(
-        original_chromosome=original_chromosome,
-        alphagenome_chromosome=alphagenome_chromosome,
-        position=position,
-        reference=reference,
-        alternate=alternate,
-        variant_id=variant_id,
-        variant_class=variant_class,
-    )
 
 def process_variant_record(
     variant,

@@ -1,93 +1,128 @@
 """
 VCF input and output utilities for the AlphaGenome wrapper.
+
 This module centralizes VCF header definitions and provides helpers for
 opening, annotating, and writing VCF records with cyvcf2.
 """
- 
+
 from __future__ import annotations
+
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
 from cyvcf2 import VCF, Writer
+from enum import StrEnum
 
 
+# Grouped AlphaGenome INFO fields
 
-INFO_MAX_ABS_SCORE = "AG_MAX_ABS_SCORE"
-INFO_STATUS = "AG_STATUS"
-INFO_VARIANT_CLASS = "AG_VARIANT_CLASS"
-INFO_TOP_OUTPUT_TYPE = "AG_TOP_OUTPUT_TYPE"
-INFO_TOP_TRACK = "AG_TOP_TRACK"
-INFO_TOP_GENE = "AG_TOP_GENE"
-INFO_CHROMATIN_SCORE = "AG_CHROMATIN_SCORE"
-INFO_EXPRESSION_SCORE = "AG_EXPRESSION_SCORE"
+class InfoField(StrEnum):
+    """VCF INFO field identifiers emitted by the AlphaGenome wrapper."""
 
+    MAX_ABS_SCORE = "AG_MAX_ABS_SCORE"
+    TOP_SCORE = "AG_TOP_SCORE"
 
-ALPHAGENOME_INFO_FIELDS: tuple[dict[str, str], ...] = (
+    STATUS = "AG_STATUS"
+    VARIANT_CLASS = "AG_VARIANT_CLASS"
+
+    TOP_OUTPUT_TYPE = "AG_TOP_OUTPUT_TYPE"
+    TOP_TRACK = "AG_TOP_TRACK"
+    TOP_GENE = "AG_TOP_GENE"
+
+    CHROMATIN_SCORE = "AG_CHROMATIN_SCORE"
+    CHROMATIN_ABS_SCORE = "AG_CHROMATIN_ABS_SCORE"
+    CHROMATIN_OUTPUT_TYPE = "AG_CHROMATIN_OUTPUT_TYPE"
+    CHROMATIN_TRACK = "AG_CHROMATIN_TRACK"
+
+    EXPRESSION_SCORE = "AG_EXPRESSION_SCORE"
+    EXPRESSION_ABS_SCORE = "AG_EXPRESSION_ABS_SCORE"
+    EXPRESSION_GENE = "AG_EXPRESSION_GENE"
+    EXPRESSION_TRACK = "AG_EXPRESSION_TRACK"
+
+# One row per INFO field: (ID, VCF type, description).
+# All fields are single-valued, so Number is "1" throughout.
+_INFO_FIELD_TABLE: tuple[tuple[InfoField, str, str], ...] = (
+    (
+        InfoField.MAX_ABS_SCORE,
+        "Float",
+        "Absolute magnitude of the global top differential AlphaGenome score",
+    ),
+    (
+        InfoField.TOP_SCORE,
+        "Float",
+        "Signed global top differential AlphaGenome score",
+    ),
+    (InfoField.STATUS, "String", "AlphaGenome processing status"),
+    (
+        InfoField.VARIANT_CLASS,
+        "String",
+        "Variant class assigned by the AlphaGenome wrapper",
+    ),
+    (
+        InfoField.TOP_OUTPUT_TYPE,
+        "String",
+        "Output type associated with AG_TOP_SCORE",
+    ),
+    (InfoField.TOP_TRACK, "String", "Track associated with AG_TOP_SCORE"),
+    (
+        InfoField.TOP_GENE,
+        "String",
+        "Gene associated with AG_TOP_SCORE, if available",
+    ),
+    (
+        InfoField.CHROMATIN_SCORE,
+        "Float",
+        "Signed top chromatin-accessibility score selected "
+        "from ATAC and DNASE results",
+    ),
+    (
+        InfoField.CHROMATIN_ABS_SCORE,
+        "Float",
+        "Absolute magnitude of AG_CHROMATIN_SCORE",
+    ),
+    (
+        InfoField.CHROMATIN_OUTPUT_TYPE,
+        "String",
+        "ATAC or DNASE output type associated with AG_CHROMATIN_SCORE",
+    ),
+    (
+        InfoField.CHROMATIN_TRACK,
+        "String",
+        "Track associated with AG_CHROMATIN_SCORE",
+    ),
+    (
+        InfoField.EXPRESSION_SCORE,
+        "Float",
+        "Signed top RNA_SEQ expression score",
+    ),
+    (
+        InfoField.EXPRESSION_ABS_SCORE,
+        "Float",
+        "Absolute magnitude of AG_EXPRESSION_SCORE",
+    ),
+    (
+        InfoField.EXPRESSION_GENE,
+        "String",
+        "Gene associated with AG_EXPRESSION_SCORE",
+    ),
+    (
+        InfoField.EXPRESSION_TRACK,
+        "String",
+        "Track associated with AG_EXPRESSION_SCORE",
+    ),
+)
+
+# Header definitions in the dict format expected by cyvcf2.
+ALPHAGENOME_INFO_FIELDS: tuple[dict[str, str], ...] = tuple(
     {
-        "ID": INFO_MAX_ABS_SCORE,
-        "Description": (
-            "Maximum absolute AlphaGenome raw score across the selected "
-            "scorers and tracks"
-        ),
-        "Type": "Float",
+        "ID": field_id.value,
+        "Description": description,
+        "Type": field_type,
         "Number": "1",
-    },
-    {
-        "ID": INFO_STATUS,
-        "Description": "AlphaGenome processing status",
-        "Type": "String",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_VARIANT_CLASS,
-        "Description": (
-            "Variant class assigned by the AlphaGenome wrapper"
-        ),
-        "Type": "String",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_TOP_OUTPUT_TYPE,
-        "Description": (
-            "Output type associated with the maximum absolute score"
-        ),
-        "Type": "String",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_TOP_TRACK,
-        "Description": (
-            "Track associated with the maximum absolute score"
-        ),
-        "Type": "String",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_TOP_GENE,
-        "Description": (
-            "Gene associated with the maximum absolute score, if available"
-        ),
-        "Type": "String",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_CHROMATIN_SCORE,
-        "Description": (
-            "Maximum absolute chromatin-related AlphaGenome score"
-        ),
-        "Type": "Float",
-        "Number": "1",
-    },
-    {
-        "ID": INFO_EXPRESSION_SCORE,
-        "Description": (
-            "Maximum absolute expression-related AlphaGenome score"
-        ),
-        "Type": "Float",
-        "Number": "1",
-    },
+    }
+    for field_id, field_type, description in _INFO_FIELD_TABLE
 )
 
 
@@ -96,16 +131,11 @@ def add_alphagenome_info_headers(vcf_reader: VCF) -> None:
     Register all AlphaGenome INFO fields in a VCF header.
 
     The header must be modified before the cyvcf2 Writer is created.
-
-    Args:
-        vcf_reader:
-            Open cyvcf2 VCF reader whose header will be extended.
+    Fields that already exist in the header are left untouched.
     """
 
     for field_definition in ALPHAGENOME_INFO_FIELDS:
-        field_id = field_definition["ID"]
-
-        if not vcf_reader.contains(field_id):
+        if not vcf_reader.contains(field_definition["ID"]):
             vcf_reader.add_info_to_header(field_definition)
 
 
@@ -117,14 +147,12 @@ def open_annotated_vcf(
     """
     Open an input VCF and an output writer with AlphaGenome INFO headers.
 
-    The reader and writer are closed automatically, including when an
-    exception occurs.
+    Reader and writer are closed automatically, also when an exception
+    occurs.
 
     Args:
-        input_path:
-            Path to an input VCF, compressed VCF, or BCF.
-        output_path:
-            Path to the annotated output VCF or BCF.
+        input_path: Path to an input VCF, compressed VCF, or BCF.
+        output_path: Path to the annotated output VCF or BCF.
 
     Yields:
         Tuple containing the configured VCF reader and writer.
@@ -134,54 +162,29 @@ def open_annotated_vcf(
     output_path = Path(output_path)
 
     if not input_path.is_file():
-        raise FileNotFoundError(
-            f"Input VCF does not exist: {input_path}"
-        )
+        raise FileNotFoundError(f"Input VCF does not exist: {input_path}")
 
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    vcf_reader = VCF(str(input_path))
-    vcf_writer: Writer | None = None
-
-    try:
+    with closing(VCF(str(input_path))) as vcf_reader:
         add_alphagenome_info_headers(vcf_reader)
-        vcf_writer = Writer(str(output_path), vcf_reader)
 
-        yield vcf_reader, vcf_writer
-
-    finally:
-        if vcf_writer is not None:
-            vcf_writer.close()
-
-        vcf_reader.close()
+        with closing(Writer(str(output_path), vcf_reader)) as vcf_writer:
+            yield vcf_reader, vcf_writer
 
 
-def set_info_value(
-    variant: Any,
-    field_name: str,
-    value: Any,
-) -> None:
+def set_info_value(variant: Any, field_name: str, value: Any) -> None:
     """
     Set or clear one INFO value on a cyvcf2 variant record.
 
     Args:
-        variant:
-            cyvcf2 Variant record.
-        field_name:
-            Registered INFO field identifier.
-        value:
-            Value to write. None removes an existing field value.
+        variant: cyvcf2 Variant record.
+        field_name: Registered INFO field identifier.
+        value: Value to write. None removes an existing field value.
     """
 
     if value is None:
-        try:
+        with suppress(KeyError):
             del variant.INFO[field_name]
-        except KeyError:
-            pass
-
-        return
-
-    variant.INFO[field_name] = value
+    else:
+        variant.INFO[field_name] = value

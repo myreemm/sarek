@@ -3,7 +3,6 @@
 import argparse
 import os
 import sys
-import pandas as pd
 import traceback
 
 ## AlphaGenome wrapper imports
@@ -14,14 +13,7 @@ from alphagenome_wrapper.result_io import (
 )
 
 from alphagenome_wrapper.vcf_io import (
-    INFO_CHROMATIN_SCORE,
-    INFO_MAX_ABS_SCORE,
-    INFO_STATUS,
-    INFO_TOP_GENE,
-    INFO_TOP_OUTPUT_TYPE,
-    INFO_TOP_TRACK,
-    INFO_VARIANT_CLASS,
-    INFO_EXPRESSION_SCORE,
+    InfoField,
     open_annotated_vcf,
     set_info_value,
 )
@@ -38,6 +30,10 @@ from alphagenome_wrapper.variants import (
     extract_variant_record_data,
     is_scorable_variant_class,
 )
+from alphagenome_wrapper.aggregation import ( 
+    CHROMATIN_GROUP,
+    EXPRESSION_GROUP,
+    empty_score_summary, )
 
 from dataclasses import dataclass
 from enum import Enum
@@ -68,12 +64,24 @@ class VariantStatus(str, Enum):
 class VariantOutputValues:
     """Values written to the annotated VCF and summary TSV."""
 
+    # Global top differential result
     max_abs_score: float | str
+    top_score: float | str
     top_output_type: str
     top_track: str
     top_gene: str
+
+    # Chromatin-accessibility result
     chromatin_score: float | str
+    chromatin_abs_score: float | str
+    chromatin_output_type: str
+    chromatin_track: str
+
+    # Gene-expression result
     expression_score: float | str
+    expression_abs_score: float | str
+    expression_gene: str
+    expression_track: str
 
 
 @dataclass(frozen=True)
@@ -235,123 +243,121 @@ def process_variant_record(
         status=VariantStatus.SCORED,
     )
 
+def value_or_missing(value):
+    """Return the configured placeholder when a value is missing."""
+
+    return (
+        value
+        if value is not None
+        else MISSING_VALUE
+    )
+
 def create_variant_output_values(
     score_result: AlphaGenomeScoreResult | None,
 ) -> VariantOutputValues:
-    """
-    Convert an optional score result into values for VCF and TSV output.
-    """
+    """Convert scoring results into VCF and TSV output values."""
 
     if score_result is None:
-        return VariantOutputValues(
-            max_abs_score=MISSING_VALUE,
-            top_output_type=MISSING_VALUE,
-            top_track=MISSING_VALUE,
-            top_gene=MISSING_VALUE,
-            chromatin_score=MISSING_VALUE,
-            expression_score=MISSING_VALUE,
-        )
+        overall = chromatin = expression = empty_score_summary()
+    else:
+        overall = score_result.overall_summary
+        chromatin = score_result.group_summaries[CHROMATIN_GROUP.key]
+        expression = score_result.group_summaries[EXPRESSION_GROUP.key]
 
     return VariantOutputValues(
-        max_abs_score=(
-            score_result.max_abs_score
-            if score_result.max_abs_score is not None
-            else MISSING_VALUE
-        ),
-        top_output_type=(
-            score_result.top_output_type or MISSING_VALUE
-        ),
-        top_track=(
-            score_result.top_track or MISSING_VALUE
-        ),
-        top_gene=(
-            score_result.top_gene or MISSING_VALUE
-        ),
-        chromatin_score=(
-            score_result.chromatin_score
-            if score_result.chromatin_score is not None
-            else MISSING_VALUE
-        ),
-        expression_score=(
-            score_result.expression_score
-            if score_result.expression_score is not None
-            else MISSING_VALUE
-        ),
+        max_abs_score=value_or_missing(overall.max_abs_score),
+        top_score=value_or_missing(overall.score),
+        top_output_type=value_or_missing(overall.output_type),
+        top_track=value_or_missing(overall.track),
+        top_gene=value_or_missing(overall.gene),
+        chromatin_score=value_or_missing(chromatin.score),
+        chromatin_abs_score=value_or_missing(chromatin.max_abs_score),
+        chromatin_output_type=value_or_missing(chromatin.output_type),
+        chromatin_track=value_or_missing(chromatin.track),
+        expression_score=value_or_missing(expression.score),
+        expression_abs_score=value_or_missing(expression.max_abs_score),
+        expression_gene=value_or_missing(expression.gene),
+        expression_track=value_or_missing(expression.track),
     )
 
 def annotate_variant_record(
     variant,
     *,
-    max_abs_score,
+    output_values: VariantOutputValues,
     status: VariantStatus,
     variant_class: VariantClass,
-    top_output_type,
-    top_track,
-    top_gene,
-    chromatin_score,
-    expression_score,
 ) -> None:
-    """
-    Add AlphaGenome result fields to a cyvcf2 variant record.
+    """Add AlphaGenome result fields to one VCF record."""
 
-    Missing optional values are omitted from the INFO column. Processing
-    status and variant class are always written.
-    """
+    values = {
+        InfoField.MAX_ABS_SCORE: output_values.max_abs_score,
+        InfoField.TOP_SCORE: output_values.top_score,
+        InfoField.STATUS: status.value,
+        InfoField.VARIANT_CLASS: variant_class.value,
+        InfoField.TOP_OUTPUT_TYPE: output_values.top_output_type,
+        InfoField.TOP_TRACK: output_values.top_track,
+        InfoField.TOP_GENE: output_values.top_gene,
+        InfoField.CHROMATIN_SCORE: output_values.chromatin_score,
+        InfoField.CHROMATIN_ABS_SCORE: output_values.chromatin_abs_score,
+        InfoField.CHROMATIN_OUTPUT_TYPE: output_values.chromatin_output_type,
+        InfoField.CHROMATIN_TRACK: output_values.chromatin_track,
+        InfoField.EXPRESSION_SCORE: output_values.expression_score,
+        InfoField.EXPRESSION_ABS_SCORE: output_values.expression_abs_score,
+        InfoField.EXPRESSION_GENE: output_values.expression_gene,
+        InfoField.EXPRESSION_TRACK: output_values.expression_track,
+    }
 
-    set_info_value(
-        variant,
-        INFO_MAX_ABS_SCORE,
-        None
-        if max_abs_score == MISSING_VALUE
-        else max_abs_score,
-    )
-    set_info_value(
-        variant,
-        INFO_STATUS,
-        status.value,
-    )
-    set_info_value(
-        variant,
-        INFO_VARIANT_CLASS,
-        variant_class.value,
-    )
-    set_info_value(
-        variant,
-        INFO_TOP_OUTPUT_TYPE,
-        None
-        if top_output_type == MISSING_VALUE
-        else str(top_output_type),
-    )
-    set_info_value(
-        variant,
-        INFO_TOP_TRACK,
-        None
-        if top_track == MISSING_VALUE
-        else str(top_track),
-    )
-    set_info_value(
-        variant,
-        INFO_TOP_GENE,
-        None
-        if top_gene == MISSING_VALUE
-        else str(top_gene),
-    )
-    set_info_value(
-        variant,
-        INFO_CHROMATIN_SCORE,
-        None
-        if chromatin_score == MISSING_VALUE
-        else chromatin_score,
-    )
-    set_info_value(
-        variant,
-        INFO_EXPRESSION_SCORE,
-        None
-        if expression_score == MISSING_VALUE
-        else expression_score,
-    )
+    for field, value in values.items():
+        set_info_value(
+            variant,
+            field.value,
+            None if value == MISSING_VALUE else value,
+        ) 
 
+def create_summary_row(
+    record: VariantRecordData,
+    output_values: VariantOutputValues,
+    status: VariantStatus,
+) -> dict[str, object]:
+    """Create one compact per-variant summary row."""
 
+    return {
+        "variant_id": record.variant_id,
+        "CHROM": record.original_chromosome,
+        "POS": record.position,
+        "REF": record.reference,
+        "ALT": record.alternate,
+        InfoField.MAX_ABS_SCORE.value:
+            output_values.max_abs_score,
+        InfoField.TOP_SCORE.value:
+            output_values.top_score,
+        InfoField.STATUS.value:
+            status.value,
+        InfoField.VARIANT_CLASS.value:
+            record.variant_class.value,
+        InfoField.TOP_OUTPUT_TYPE.value:
+            output_values.top_output_type,
+        InfoField.TOP_TRACK.value:
+            output_values.top_track,
+        InfoField.TOP_GENE.value:
+            output_values.top_gene,
+        InfoField.CHROMATIN_SCORE.value:
+            output_values.chromatin_score,
+        InfoField.CHROMATIN_ABS_SCORE.value:
+            output_values.chromatin_abs_score,
+        InfoField.CHROMATIN_OUTPUT_TYPE.value:
+            output_values.chromatin_output_type,
+        InfoField.CHROMATIN_TRACK.value:
+            output_values.chromatin_track,
+        InfoField.EXPRESSION_SCORE.value:
+            output_values.expression_score,
+        InfoField.EXPRESSION_ABS_SCORE.value:
+            output_values.expression_abs_score,
+        InfoField.EXPRESSION_GENE.value:
+            output_values.expression_gene,
+        InfoField.EXPRESSION_TRACK.value:
+            output_values.expression_track,
+    }
 
 def run(
     vcf_path,
@@ -407,33 +413,15 @@ def run(
 
             annotate_variant_record(
                 variant,
-                max_abs_score=output_values.max_abs_score,
+                output_values=output_values,
                 status=status,
                 variant_class=record.variant_class,
-                top_output_type=output_values.top_output_type,
-                top_track=output_values.top_track,
-                top_gene=output_values.top_gene,
-                chromatin_score=output_values.chromatin_score,
-                expression_score=output_values.expression_score,
+                
             )
 
             vcf_writer.write_record(variant)
-            summary_rows.append({"variant_id": record.variant_id,"CHROM": record.original_chromosome,"POS": record.position,"REF": record.reference,"ALT": record.alternate,
-                INFO_MAX_ABS_SCORE:( output_values.max_abs_score),
-                INFO_STATUS: status.value,
-                INFO_VARIANT_CLASS: (
-                        record.variant_class.value),
-                INFO_TOP_OUTPUT_TYPE: (
-                        output_values.top_output_type),
-                INFO_TOP_TRACK: (
-                        output_values.top_track),
-                INFO_TOP_GENE: (
-                        output_values.top_gene),
-                INFO_CHROMATIN_SCORE: (
-                        output_values.chromatin_score),
-                INFO_EXPRESSION_SCORE: (
-                        output_values.expression_score),
-            }
+            summary_rows.append(
+                create_summary_row(record, output_values, status)
             )
     write_summary_scores( output_summary_scores, summary_rows, ) 
     write_tidy_scores( output_tidy_scores, tidy_score_frames, )
@@ -449,7 +437,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary-scores", required=True, help="Path to the compact per-variant AlphaGenome summary TSV.")
     parser.add_argument("--max-variants", type=int, default=3)
-    parser.add_argument("--max-scorers", type=int, default=1)
+    parser.add_argument("--max-scorers", type=int, default=3)
     parser.add_argument("--tidy-scores", required=True,  help="Path to the complete AlphaGenome tidy-score TSV.")
     parser.add_argument("--scorers", required=False, default=None)
 

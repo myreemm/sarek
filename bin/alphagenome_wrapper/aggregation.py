@@ -8,8 +8,8 @@ biologically grouped summary values.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional
-
 import pandas as pd
 
 
@@ -19,29 +19,86 @@ SCORE_COLUMN_CANDIDATES = (
     "variant_score",
 )
 
-CHROMATIN_OUTPUT_TYPES = frozenset(
-    {
-        "ATAC",
-        "DNASE",
-    }
-)
 
-EXPRESSION_OUTPUT_TYPES = frozenset(
-    {
-        "RNA_SEQ",
-    }
-)
+# Dataclasses:
+
 
 
 @dataclass(frozen=True)
 class TopScoreSummary:
     """Top AlphaGenome score and its associated metadata."""
 
+    score: Optional[float]
     max_abs_score: Optional[float]
     output_type: Optional[str]
     track: Optional[str]
     gene: Optional[str]
 
+class ScoreFieldSuffix(StrEnum):
+    """Suffixes used for compact grouped score fields."""
+
+    SCORE = "SCORE"
+    ABS_SCORE = "ABS_SCORE"
+    OUTPUT_TYPE = "OUTPUT_TYPE"
+    TRACK = "TRACK"
+    GENE = "GENE"
+
+
+@dataclass(frozen=True)
+class ScoreGroup:
+    """Configuration for one biological score group."""
+
+    key: str
+    output_types: frozenset[str]
+    context_fields: tuple[ScoreFieldSuffix, ...]
+
+
+CHROMATIN_GROUP = ScoreGroup(
+    key="CHROMATIN",
+    output_types=frozenset(
+        {
+            "ATAC",
+            "DNASE",
+        }
+    ),
+    context_fields=(
+        ScoreFieldSuffix.OUTPUT_TYPE,
+        ScoreFieldSuffix.TRACK,
+    ),
+)
+
+
+EXPRESSION_GROUP = ScoreGroup(
+    key="EXPRESSION",
+    output_types=frozenset(
+        {
+            "RNA_SEQ",
+        }
+    ),
+    context_fields=(
+        ScoreFieldSuffix.TRACK,
+        ScoreFieldSuffix.GENE,
+    ),
+)
+
+
+SCORE_GROUPS = (
+    CHROMATIN_GROUP,
+    EXPRESSION_GROUP,
+)
+
+# Helper functions:
+
+def empty_score_summary() -> TopScoreSummary:
+    """Return an empty score summary."""
+
+    return TopScoreSummary(
+        score=None,
+        max_abs_score=None,
+        output_type=None,
+        track=None,
+        gene=None,
+    )
 
 def find_score_column(
     score_dataframe: pd.DataFrame,
@@ -110,39 +167,63 @@ def extract_top_gene(
     )
 
 
-def summarize_tidy_scores(
+def summarize_scores(
     score_dataframe: pd.DataFrame,
+    output_types: frozenset[str] | None = None,
 ) -> TopScoreSummary:
     """
-    Summarize the AlphaGenome tidy-score table for one variant.
+    Select the row with the largest absolute score.
 
-    The row with the maximum absolute score across all selected scorers and
-    tracks is used as the top result.
+    The original signed score and all returned metadata are taken from
+    the same tidy-score row. When output_types is provided, only matching
+    output modalities are considered.
     """
 
     if score_dataframe is None or score_dataframe.empty:
-        return TopScoreSummary(
-            max_abs_score=None,
-            output_type=None,
-            track=None,
-            gene=None,
+        return empty_score_summary()
+
+    selected_rows = score_dataframe
+
+    if output_types is not None:
+        if "output_type" not in selected_rows.columns:
+            return empty_score_summary()
+
+        normalized_output_types = frozenset(
+            output_type.upper()
+            for output_type in output_types
         )
 
-    numeric_scores = get_numeric_scores(score_dataframe)
+        output_type_values = (
+            selected_rows["output_type"]
+            .astype(str)
+            .str.upper()
+        )
+
+        selected_rows = selected_rows.loc[
+            output_type_values.isin(
+                normalized_output_types
+            )
+        ]
+
+    if selected_rows.empty:
+        return empty_score_summary()
+
+    numeric_scores = get_numeric_scores(
+        selected_rows
+    )
 
     if numeric_scores is None:
-        return TopScoreSummary(
-            max_abs_score=None,
-            output_type=None,
-            track=None,
-            gene=None,
-        )
+        return empty_score_summary()
 
     top_index = numeric_scores.abs().idxmax()
-    top_row = score_dataframe.loc[top_index]
+    top_row = selected_rows.loc[top_index]
+    signed_score = float(
+        numeric_scores.loc[top_index]
+    )
 
     return TopScoreSummary(
-        max_abs_score=float(abs(numeric_scores.loc[top_index])),
+        score=signed_score,
+        max_abs_score=abs(signed_score),
         output_type=normalize_optional_text(
             top_row.get("output_type")
         ),
@@ -152,45 +233,33 @@ def summarize_tidy_scores(
         gene=extract_top_gene(top_row),
     )
 
+def summarize_tidy_scores(
+    score_dataframe: pd.DataFrame,
+) -> TopScoreSummary:
+    """
+    Summarize all AlphaGenome score results.
 
-def summarize_group_score(
+    The top row is selected by maximum absolute score while preserving
+    the original signed score and the metadata from the same row.
+    """
+
+    return summarize_scores(
+        score_dataframe
+    )
+
+
+def summarize_group_scores(
     score_dataframe: pd.DataFrame,
     output_types: frozenset[str],
-) -> Optional[float]:
+) -> TopScoreSummary:
     """
-    Return the maximum absolute score for selected output modalities.
+    Summarize AlphaGenome scores for selected output modalities.
 
-    None is returned when no matching numeric score is available.
+    The top row is selected by maximum absolute score while preserving
+    the original signed score and the metadata from the same row.
     """
 
-    if (
-        score_dataframe is None
-        or score_dataframe.empty
-        or "output_type" not in score_dataframe.columns
-    ):
-        return None
-
-    normalized_output_types = frozenset(
-        output_type.upper()
-        for output_type in output_types
+    return summarize_scores(
+        score_dataframe,
+        output_types,
     )
-
-    output_type_values = (
-        score_dataframe["output_type"]
-        .astype(str)
-        .str.upper()
-    )
-
-    matching_rows = score_dataframe.loc[
-        output_type_values.isin(normalized_output_types)
-    ]
-
-    if matching_rows.empty:
-        return None
-
-    numeric_scores = get_numeric_scores(matching_rows)
-
-    if numeric_scores is None:
-        return None
-
-    return float(numeric_scores.abs().max())

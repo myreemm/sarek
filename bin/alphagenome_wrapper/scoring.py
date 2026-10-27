@@ -14,14 +14,14 @@ import pandas as pd
 
 # AlphaGenome imports
 from alphagenome.data import genome
-from alphagenome.models import 
+from alphagenome.models import variant_scorers
 
 # AlphaGenome wrapper imports
 
 from alphagenome_wrapper.aggregation import (
-    CHROMATIN_OUTPUT_TYPES,
-    EXPRESSION_OUTPUT_TYPES,
-    summarize_group_score,
+    SCORE_GROUPS,
+    TopScoreSummary,
+    summarize_group_scores,
     summarize_tidy_scores,
 )
 # Constants:
@@ -38,34 +38,26 @@ ACTIVE_SCORER_SUFFIX = "_active"
 
 @dataclass(frozen=True)
 class AlphaGenomeScoreResult:
-
     """
     Aggregated result of an AlphaGenome variant-scoring request.
 
     Attributes:
-        max_abs_score:
-            Maximum absolute raw score across the selected scorers and tracks.
         tidy_scores:
             Complete tidy AlphaGenome results for the scored variant.
-        top_output_type:
-            Output modality associated with the maximum absolute score.
-        top_track:
-            Track associated with the maximum absolute score.
-        top_gene:
-            Gene associated with the maximum absolute score, if available.
-        chromatin_score:
-            Maximum absolute score across chromatin-related output types.
-        expression_score:
-            Maximum absolute score across RNA_SEQ results.
+        overall_summary:
+            Signed top score and associated context across all selected
+            scorer results.
+        chromatin_summary:
+            Signed top score and associated context across ATAC and
+            DNASE results.
+        expression_summary:
+            Signed top score and associated context across RNA_SEQ
+            results.
     """
 
-    max_abs_score: Optional[float]
     tidy_scores: pd.DataFrame
-    top_output_type: Optional[str]
-    top_track: Optional[str]
-    top_gene: Optional[str]
-    chromatin_score: Optional[float]
-    expression_score: Optional[float]
+    overall_summary: TopScoreSummary
+    group_summaries: dict[str, TopScoreSummary]
     
 
 
@@ -176,6 +168,12 @@ def get_selected_scorers(
 
 
 def compute_alphagenome_score(chrom, pos, ref, alt, dna_model, organism, sequence_length, selected_scorers,) -> AlphaGenomeScoreResult:
+    """
+    Score one variant and summarize its AlphaGenome results.
+
+    Top rows are selected by maximum absolute raw score. The original
+    signed score and the metadata from the selected row are preserved.
+    """
     variant_id = f"{chrom}_{pos}_{ref}_{alt}"
 
     variant = genome.Variant(
@@ -196,20 +194,21 @@ def compute_alphagenome_score(chrom, pos, ref, alt, dna_model, organism, sequenc
     )
 
     score_dataframe = variant_scorers.tidy_scores([variant_scores])
-
-    top_summary = summarize_tidy_scores(score_dataframe)
-
-    chromatin_score = summarize_group_score(score_dataframe, CHROMATIN_OUTPUT_TYPES,)
-
-    expression_score = summarize_group_score(score_dataframe, EXPRESSION_OUTPUT_TYPES,)
+    
+    overall_summary=summarize_tidy_scores(score_dataframe)
+    group_summaries = {
+            group.key: summarize_group_scores(
+                score_dataframe,
+                group.output_types,
+            )
+            for group in SCORE_GROUPS
+        }
 
     return AlphaGenomeScoreResult(
-        max_abs_score=top_summary.max_abs_score,
+        
         tidy_scores=score_dataframe,
-        top_output_type=top_summary.output_type,
-        top_track=top_summary.track,
-        top_gene=top_summary.gene,
-        chromatin_score=chromatin_score,
-        expression_score=expression_score,
+        overall_summary=overall_summary,
+        group_summaries=group_summaries,
     )
+
 

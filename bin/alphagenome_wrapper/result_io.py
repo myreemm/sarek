@@ -14,16 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-from alphagenome_wrapper.vcf_io import (
-    INFO_CHROMATIN_SCORE,
-    INFO_EXPRESSION_SCORE,
-    INFO_MAX_ABS_SCORE,
-    INFO_STATUS,
-    INFO_TOP_GENE,
-    INFO_TOP_OUTPUT_TYPE,
-    INFO_TOP_TRACK,
-    INFO_VARIANT_CLASS,
-)
+from alphagenome_wrapper.vcf_io import InfoField
 
 
 
@@ -34,14 +25,21 @@ SUMMARY_COLUMNS = (
     "POS",
     "REF",
     "ALT",
-    INFO_MAX_ABS_SCORE,
-    INFO_STATUS,
-    INFO_VARIANT_CLASS,
-    INFO_TOP_OUTPUT_TYPE,
-    INFO_TOP_TRACK,
-    INFO_TOP_GENE,
-    INFO_CHROMATIN_SCORE,
-    INFO_EXPRESSION_SCORE,
+    InfoField.TOP_SCORE.value,
+    InfoField.MAX_ABS_SCORE.value,
+    InfoField.STATUS.value,
+    InfoField.VARIANT_CLASS.value,
+    InfoField.TOP_OUTPUT_TYPE.value,
+    InfoField.TOP_TRACK.value,
+    InfoField.TOP_GENE.value,
+    InfoField.CHROMATIN_SCORE.value,
+    InfoField.CHROMATIN_ABS_SCORE.value,
+    InfoField.CHROMATIN_OUTPUT_TYPE.value,
+    InfoField.CHROMATIN_TRACK.value,
+    InfoField.EXPRESSION_SCORE.value,
+    InfoField.EXPRESSION_ABS_SCORE.value,
+    InfoField.EXPRESSION_GENE.value,
+    InfoField.EXPRESSION_TRACK.value,
 )
 
 

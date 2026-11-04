@@ -65,7 +65,7 @@ class VariantOutputValues:
     """Values written to the annotated VCF and summary TSV."""
 
     # Global top differential result
-    max_abs_score: float | str
+    top_abs_score: float | str
     top_score: float | str
     top_output_type: str
     top_track: str
@@ -265,17 +265,17 @@ def create_variant_output_values(
         expression = score_result.group_summaries[EXPRESSION_GROUP.key]
 
     return VariantOutputValues(
-        max_abs_score=value_or_missing(overall.max_abs_score),
+        top_abs_score=value_or_missing(overall.top_abs_score),
         top_score=value_or_missing(overall.score),
         top_output_type=value_or_missing(overall.output_type),
         top_track=value_or_missing(overall.track),
         top_gene=value_or_missing(overall.gene),
         chromatin_score=value_or_missing(chromatin.score),
-        chromatin_abs_score=value_or_missing(chromatin.max_abs_score),
+        chromatin_abs_score=value_or_missing(chromatin.top_abs_score),
         chromatin_output_type=value_or_missing(chromatin.output_type),
         chromatin_track=value_or_missing(chromatin.track),
         expression_score=value_or_missing(expression.score),
-        expression_abs_score=value_or_missing(expression.max_abs_score),
+        expression_abs_score=value_or_missing(expression.top_abs_score),
         expression_gene=value_or_missing(expression.gene),
         expression_track=value_or_missing(expression.track),
     )
@@ -290,7 +290,7 @@ def annotate_variant_record(
     """Add AlphaGenome result fields to one VCF record."""
 
     values = {
-        InfoField.MAX_ABS_SCORE: output_values.max_abs_score,
+        InfoField.TOP_ABS_SCORE: output_values.top_abs_score,
         InfoField.TOP_SCORE: output_values.top_score,
         InfoField.STATUS: status.value,
         InfoField.VARIANT_CLASS: variant_class.value,
@@ -327,8 +327,8 @@ def create_summary_row(
         "POS": record.position,
         "REF": record.reference,
         "ALT": record.alternate,
-        InfoField.MAX_ABS_SCORE.value:
-            output_values.max_abs_score,
+        InfoField.TOP_ABS_SCORE.value:
+            output_values.top_abs_score,
         InfoField.TOP_SCORE.value:
             output_values.top_score,
         InfoField.STATUS.value:
@@ -450,7 +450,7 @@ def main():
 
     organism = resolve_organism(args.organism)
     sequence_length = resolve_sequence_length(args.sequence_length)
-    selected_scorers = get_selected_scorers(max_scorers =args.max_scorers, scorer_names=args.scorers,)
+    selected_scorers = get_selected_scorers(organism=organism, max_scorers=args.max_scorers, scorer_names=args.scorers,)
    
     print(f"Using {len(selected_scorers)} AlphaGenome scorer(s)", flush=True)
     print(f"Requested scorer groups: {args.scorers}", flush=True)
